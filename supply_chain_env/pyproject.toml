@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supply-chain-env"
+version = "1.0.0"
+description = "A real-world supply chain restocking OpenEnv environment"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.1.0",
+    "uvicorn[standard]>=0.27.0",
+    "fastapi>=0.110.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
