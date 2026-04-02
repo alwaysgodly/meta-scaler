@@ -1,0 +1,12 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Distribution / packaging
+node_modules/
+*.egg-info/
+dist/
+build/
+
+# Environment secrets (if you ever use them)
+.env
