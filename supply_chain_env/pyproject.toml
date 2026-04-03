@@ -18,7 +18,7 @@ dependencies = [
 dev = ["pytest", "httpx"]
 
 [project.scripts]
-server = "supply_chain_env.server:app"
+server = "server.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
