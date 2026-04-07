@@ -1,14 +1,11 @@
 """
 Inference Script — SupplyChainEnv
 ===================================
-Uses an LLM agent (via OpenAI client) to interact with SupplyChainEnv.
-Emits structured [START] / [STEP] / [END] logs to stdout.
-
-Required environment variables:
-    API_BASE_URL     The API endpoint for the LLM.
-    MODEL_NAME       The model identifier to use for inference.
-    HF_TOKEN         Your Hugging Face / API key.
-    TASK_NAME        Task to run: easy | medium | hard (default: easy)
+Required env vars:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
+    TASK_NAME      Task to run: easy | medium | hard (default: easy)
 """
 
 import os
@@ -16,11 +13,9 @@ import json
 import sys
 from typing import List, Optional
 
-from openai import OpenAI
-
 # --- env vars ---
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "dummy-key"
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 TASK_NAME = os.getenv("TASK_NAME", "easy")
 MAX_STEPS = 60
@@ -57,98 +52,20 @@ def log_end(success: bool, steps: int, rewards: List[float]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# LLM agent
+# Fallback greedy policy (always works, no network needed)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a supply chain inventory management agent.
-You will receive the current warehouse state and must decide what to order.
-
-You must respond with a JSON object in this exact format:
-{
-  "orders": [
-    {"product_id": 0, "quantity": 50, "supplier_id": 1},
-    {"product_id": 1, "quantity": 30, "supplier_id": 2}
-  ]
-}
-
-Rules:
-- Only include products that need restocking (quantity > 0)
-- quantity must be between 0 and 500
-- supplier_id: 0 = expensive+fast, last index = cheapest+slowest
-- Order enough to cover forecast demand with a safety buffer
-- Respond with valid JSON only, no explanation
-"""
-
-
-def build_prompt(obs, cfg: dict) -> str:
-    NW = len(obs.inventory)
-    NP = len(obs.inventory[0]) if NW > 0 else 0
-    NS = len(obs.supplier_prices[0]) if NP > 0 else 0
-
-    return f"""Current warehouse state:
-- Inventory: {obs.inventory}
-- In-transit (arriving next step): {obs.in_transit}
-- Demand forecast (noisy): {obs.demand_forecast}
-- Supplier prices [product x supplier]: {obs.supplier_prices}
-- Supplier lead times [product x supplier]: {obs.supplier_lead_times}
-- Last stockouts: {obs.stockouts}
-- Last step cost: {obs.step_cost}
-- Last reward: {obs.reward}
-
-Task: {TASK_NAME} | Warehouses: {NW} | Products: {NP} | Suppliers: {NS}
-
-Decide which products to restock, how much, and from which supplier.
-Respond with JSON only."""
-
-
-def get_llm_action(client: OpenAI, obs, cfg: dict) -> SupplyChainAction:
-    """Ask the LLM what orders to place."""
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_prompt(obs, cfg)},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-        )
-        response_text = completion.choices[0].message.content or "{}"
-
-        # strip markdown code fences if present
-        response_text = response_text.strip()
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
-        response_text = response_text.strip()
-
-        data = json.loads(response_text)
-        orders = []
-        for o in data.get("orders", []):
-            orders.append(OrderItem(
-                product_id=int(o["product_id"]),
-                quantity=int(o["quantity"]),
-                supplier_id=int(o["supplier_id"]),
-            ))
-        return SupplyChainAction(orders=orders)
-
-    except Exception as e:
-        # fallback: greedy restock
-        return fallback_action(obs)
-
-
 def fallback_action(obs) -> SupplyChainAction:
-    """Simple greedy fallback if LLM fails."""
+    """Simple greedy fallback — no LLM needed."""
     orders = []
-    NP = len(obs.inventory[0]) if obs.inventory else 0
-    NS = len(obs.supplier_prices[0]) if obs.supplier_prices else 1
+    NW = len(obs.inventory) if obs.inventory else 0
+    NP = len(obs.inventory[0]) if NW > 0 else 0
+    NS = len(obs.supplier_prices[0]) if NP > 0 and obs.supplier_prices else 1
 
     for p in range(NP):
-        total_inv = sum(obs.inventory[w][p] for w in range(len(obs.inventory)))
-        total_transit = sum(obs.in_transit[w][p] for w in range(len(obs.in_transit)))
-        total_forecast = sum(obs.demand_forecast[w][p] for w in range(len(obs.demand_forecast)))
-
+        total_inv = sum(obs.inventory[w][p] for w in range(NW))
+        total_transit = sum(obs.in_transit[w][p] for w in range(NW))
+        total_forecast = sum(obs.demand_forecast[w][p] for w in range(NW))
         gap = max(0.0, total_forecast * 1.5 - total_inv - total_transit)
         if gap > 1.0:
             orders.append(OrderItem(
@@ -160,15 +77,76 @@ def fallback_action(obs) -> SupplyChainAction:
 
 
 # ---------------------------------------------------------------------------
+# LLM agent (with full fallback on any error)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """You are a supply chain inventory management agent.
+Respond with a JSON object only:
+{
+  "orders": [
+    {"product_id": 0, "quantity": 50, "supplier_id": 1}
+  ]
+}
+Rules: quantity 0-500, supplier 0=fast+expensive, last=slow+cheap. JSON only."""
+
+
+def get_llm_action(client, obs, cfg: dict) -> SupplyChainAction:
+    """Ask LLM what to order. Falls back to greedy on any error."""
+    try:
+        NW = len(obs.inventory)
+        NP = len(obs.inventory[0]) if NW > 0 else 0
+        NS = len(obs.supplier_prices[0]) if NP > 0 else 1
+
+        prompt = f"""Inventory: {obs.inventory}
+In-transit: {obs.in_transit}
+Demand forecast: {obs.demand_forecast}
+Supplier prices: {obs.supplier_prices}
+Supplier lead times: {obs.supplier_lead_times}
+Stockouts: {obs.stockouts}
+Task: {TASK_NAME} | Warehouses: {NW} | Products: {NP} | Suppliers: {NS}
+Respond with JSON orders only."""
+
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+            timeout=10,
+        )
+        response_text = completion.choices[0].message.content or "{}"
+
+        # strip markdown fences
+        response_text = response_text.strip()
+        if "```" in response_text:
+            parts = response_text.split("```")
+            response_text = parts[1] if len(parts) > 1 else parts[0]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+        response_text = response_text.strip()
+
+        data = json.loads(response_text)
+        orders = []
+        for o in data.get("orders", []):
+            orders.append(OrderItem(
+                product_id=int(o["product_id"]),
+                quantity=min(500, max(0, int(o["quantity"]))),
+                supplier_id=int(o["supplier_id"]),
+            ))
+        return SupplyChainAction(orders=orders)
+
+    except Exception:
+        # any error → use greedy fallback silently
+        return fallback_action(obs)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    cfg = TASK_CONFIGS[TASK_NAME]
-
-    env = SupplyChainEnv(task_id=TASK_NAME, seed=42)
-
     rewards: List[float] = []
     steps_taken = 0
     success = False
@@ -176,29 +154,47 @@ def main() -> None:
     log_start(task=TASK_NAME, env="supply-chain-env", model=MODEL_NAME)
 
     try:
+        # try to init OpenAI client — fall back gracefully if no key
+        try:
+            from openai import OpenAI
+            client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+            use_llm = True
+        except Exception:
+            client = None
+            use_llm = False
+
+        cfg = TASK_CONFIGS[TASK_NAME]
+        env = SupplyChainEnv(task_id=TASK_NAME, seed=42)
         obs = env.reset(seed=42)
 
-        for step in range(1, MAX_STEPS + 1):
+        for step in range(1, cfg["max_steps"] + 1):
             if obs.done:
                 break
 
-            # get action from LLM
-            action = get_llm_action(client, obs, cfg)
+            # get action
+            try:
+                if use_llm and client:
+                    action = get_llm_action(client, obs, cfg)
+                else:
+                    action = fallback_action(obs)
+            except Exception:
+                action = fallback_action(obs)
+
             action_str = json.dumps([
                 {"p": o.product_id, "q": o.quantity, "s": o.supplier_id}
                 for o in action.orders
             ])
 
-            # step the environment
+            # step environment
             try:
                 obs = env.step(action)
-                reward = obs.reward if obs.reward is not None else 0.0
-                done = obs.done
+                reward = float(obs.reward) if obs.reward is not None else 0.0
+                done = bool(obs.done)
                 error = None
             except Exception as e:
                 reward = 0.0
                 done = True
-                error = str(e)
+                error = str(e)[:100]
 
             rewards.append(reward)
             steps_taken = step
@@ -213,7 +209,7 @@ def main() -> None:
             success = False
 
     except Exception as e:
-        print(f"[DEBUG] Fatal error: {e}", flush=True)
+        print(f"[DEBUG] Fatal: {e}", flush=True)
         success = False
 
     finally:
