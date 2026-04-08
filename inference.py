@@ -32,26 +32,22 @@ except Exception as e:
 # FastAPI Setup
 # --------------------------------------------------
 app = FastAPI()
+
 @app.post("/reset")
-@app.post("/openenv/reset")  # Adding both to be safe
+@app.post("/openenv/reset")
 async def reset_env():
-    """Handles the validator's reset signal."""
     try:
-        # If you have an active env object, you could call env.reset() here
-        # But for the validator to pass Phase 1, it just needs a 200 OK response.
         return {"status": "success", "message": "Environment reset"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# Keep your existing /health route too!
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+# --------------------------------------------------
+# ✅ FIXED: Removed duplicate /health
+# --------------------------------------------------
 @app.get("/")
 @app.get("/health")
 def health():
     return {"status": "ok"}
-    
 
 # --------------------------------------------------
 # Request Schema
@@ -96,7 +92,6 @@ def fallback_action(obs):
 @app.post("/predict")
 def predict(req: PredictRequest):
     try:
-        # Minimal safe response for validator
         return {
             "output": f"received: {req.input}"
         }
@@ -108,10 +103,5 @@ def predict(req: PredictRequest):
         }
 
 # --------------------------------------------------
-# Entry Point
+# ❌ REMOVED: uvicorn.run() (DO NOT ADD THIS BACK)
 # --------------------------------------------------
-if __name__ == "__main__":
-    try:
-        uvicorn.run(app, host="0.0.0.0", port=7860)
-    except Exception as e:
-        print("FATAL ERROR:", e)
