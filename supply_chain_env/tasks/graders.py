@@ -1,13 +1,9 @@
 """
-Agent graders for SupplyChainEnv tasks.
-
-Each grader runs the environment with a specific policy and returns a score 0.0–1.0.
-- easy grader:   score based on zero stockouts over 20 steps
-- medium grader: score based on managing 5 products, seasonal demand
-- hard grader:   score based on multi-warehouse, noisy demand with delays
+Agent graders for SupplyChainEnv — easy / medium / hard.
+Scores are strictly in (0.0, 1.0).
 
 Usage:
-    python graders.py --task easy
+    python tasks/graders.py --task all --seed 42
 """
 
 from __future__ import annotations
@@ -15,20 +11,21 @@ import argparse
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Works both locally and in Docker
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for p in [
+    os.path.join(BASE_DIR, "src"),
+    os.path.join(BASE_DIR, "tasks"),
+    "/app/src",
+    "/app/tasks",
+]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-from supply_chain_env.env import SupplyChainEnv, SupplyChainAction, OrderItem
+from supply_chain_env.env import SupplyChainEnv, SupplyChainAction, OrderItem, TASK_CONFIGS
 
 
-# ---------------------------------------------------------------------------
-# Baseline policies
-# ---------------------------------------------------------------------------
-
-def greedy_restock_policy(obs, task_cfg: dict, safety_factor: float = 1.5) -> SupplyChainAction:
-    """
-    Simple greedy policy: order enough to cover forecast demand * safety_factor
-    minus current inventory and in-transit, from cheapest supplier.
-    """
+def greedy_restock_policy(obs, cfg: dict, safety_factor: float = 1.5) -> SupplyChainAction:
     orders = []
     NW = len(obs.inventory)
     NP = len(obs.inventory[0]) if NW > 0 else 0
@@ -38,12 +35,9 @@ def greedy_restock_policy(obs, task_cfg: dict, safety_factor: float = 1.5) -> Su
         total_inv = sum(obs.inventory[w][p] for w in range(NW))
         total_transit = sum(obs.in_transit[w][p] for w in range(NW))
         total_forecast = sum(obs.demand_forecast[w][p] for w in range(NW))
-
         target = total_forecast * safety_factor
         gap = max(0.0, target - total_inv - total_transit)
-
         if gap > 1.0:
-            # Pick cheapest supplier (last index = cheapest by construction)
             best_supplier = NS - 1
             qty = int(round(gap))
             orders.append(OrderItem(product_id=p, quantity=qty, supplier_id=best_supplier))
@@ -51,20 +45,8 @@ def greedy_restock_policy(obs, task_cfg: dict, safety_factor: float = 1.5) -> Su
     return SupplyChainAction(orders=orders)
 
 
-# ---------------------------------------------------------------------------
-# Graders
-# ---------------------------------------------------------------------------
-
 def run_grader(task_id: str, seed: int = 42, verbose: bool = False) -> float:
-    """
-    Run one episode with the greedy policy and compute a score 0.0–1.0.
-
-    Scoring:
-      - Base score from total_reward accumulated (normalized)
-      - Penalties for repeated stockouts
-    """
     env = SupplyChainEnv(task_id=task_id, seed=seed)
-    from supply_chain_env.env import TASK_CONFIGS
     cfg = TASK_CONFIGS[task_id]
 
     obs = env.reset(seed=seed)
@@ -77,7 +59,6 @@ def run_grader(task_id: str, seed: int = 42, verbose: bool = False) -> float:
         obs = env.step(action)
         total_steps += 1
 
-        # Count stockout events (any warehouse/product with stockout > 0)
         stockout_event = any(
             obs.stockouts[w][p] > 0
             for w in range(len(obs.stockouts))
@@ -91,43 +72,38 @@ def run_grader(task_id: str, seed: int = 42, verbose: bool = False) -> float:
 
         if verbose:
             step = obs.metadata.get("step", total_steps)
-            print(f"  Step {step:3d} | reward={obs.reward:.3f} | cost={obs.step_cost:.2f} | stockout_events={total_stockout_events}")
+            print(f"  Step {step:3d} | reward={obs.reward:.3f} | stockout_events={total_stockout_events}")
 
-    # Normalize reward to 0–1
-    # Max possible: 1.0 per step * max_steps
     max_possible = cfg["max_steps"]
-    # Shift from [-max, max] to [0, 1]
     raw_score = (episode_reward + max_possible) / (2 * max_possible)
     raw_score = max(0.0, min(1.0, raw_score))
 
-    # Penalize stockout rate
     stockout_rate = total_stockout_events / max(1, total_steps)
     stockout_penalty = stockout_rate * 0.3
 
-    final_score = max(0.0, min(1.0, raw_score - stockout_penalty))
+    final_score = raw_score - stockout_penalty
+
+    # Ensure strictly between 0 and 1 (never exactly 0.0 or 1.0)
+    final_score = max(0.001, min(0.999, final_score))
 
     if verbose:
         print(f"\n  Task: {task_id}")
         print(f"  Episode reward: {episode_reward:.3f}")
         print(f"  Stockout events: {total_stockout_events}/{total_steps} ({stockout_rate:.1%})")
-        print(f"  Raw score: {raw_score:.3f}")
-        print(f"  Final score: {final_score:.3f}")
+        print(f"  Final score: {final_score:.4f}")
 
     return round(final_score, 4)
 
 
 def grade_easy(seed: int = 42, verbose: bool = False) -> float:
-    """Easy grader: single warehouse, 1 product, stable demand. Target: ≥ 0.7"""
     return run_grader("easy", seed=seed, verbose=verbose)
 
 
 def grade_medium(seed: int = 42, verbose: bool = False) -> float:
-    """Medium grader: 5 products, seasonal demand. Target: ≥ 0.5"""
     return run_grader("medium", seed=seed, verbose=verbose)
 
 
 def grade_hard(seed: int = 42, verbose: bool = False) -> float:
-    """Hard grader: 3 warehouses, 10 products, delays. Target: ≥ 0.35"""
     return run_grader("hard", seed=seed, verbose=verbose)
 
 
@@ -136,11 +112,6 @@ GRADERS = {
     "medium": grade_medium,
     "hard": grade_hard,
 }
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run SupplyChainEnv graders")
