@@ -9,28 +9,27 @@ description: >
 author: Pushkraj
 license: MIT
 
-# These entrypoints tell the validator exactly which functions to run
 tasks:
   - id: easy
     difficulty: easy
     description: "Single warehouse, 1 product, stable demand. Learn basic restocking."
     max_steps: 20
     target_score: 0.7
-    grader_entrypoint: "tasks.graders:grade_easy"
+    grader_entrypoint: "supply_chain_env.tasks.graders:grade_easy"
 
   - id: medium
     difficulty: medium
     description: "Single warehouse, 5 products, seasonal demand fluctuation."
     max_steps: 40
     target_score: 0.5
-    grader_entrypoint: "tasks.graders:grade_medium"
+    grader_entrypoint: "supply_chain_env.tasks.graders:grade_medium"
 
   - id: hard
     difficulty: hard
     description: "3 warehouses, 10 products, noisy seasonal demand + random supplier delays."
     max_steps: 60
     target_score: 0.35
-    grader_entrypoint: "tasks.graders:grade_hard"
+    grader_entrypoint: "supply_chain_env.tasks.graders:grade_hard"
 
 action_space:
   type: structured
@@ -64,7 +63,7 @@ reward:
   description: "service_level * 0.9 - stockout_severity * 0.5 - holding_penalty - 0.05"
 
 environment:
-  # This must match your package structure in /src
+  # Adjusted to match your "supply_chain_env" folder name
   env_class: "supply_chain_env.env:SupplyChainEnv"
   server_module: "supply_chain_env.server"
   server_app: "app"
@@ -75,7 +74,7 @@ docker:
   port: 8000
 
 baseline:
-  # Ensure this file is also in your ROOT directory as 'inference.py'
+  # Matches the inference.py file I see in your root directory
   script: "inference.py"
   agent: "Greedy Restock (safety_factor=1.5)"
   scores:
