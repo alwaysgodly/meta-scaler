@@ -1,0 +1,6 @@
+openenv-core
+fastapi
+uvicorn
+openai
+python-dotenv
+# Add your other environment dependencies here
