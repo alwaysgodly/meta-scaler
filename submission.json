@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "task_id": "easy",
+      "grader_entrypoint": "tasks.graders:grade_easy"
+    },
+    {
+      "task_id": "medium",
+      "grader_entrypoint": "tasks.graders:grade_medium"
+    },
+    {
+      "task_id": "hard",
+      "grader_entrypoint": "tasks.graders:grade_hard"
+    }
+  ]
+}
