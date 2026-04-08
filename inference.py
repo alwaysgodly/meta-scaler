@@ -1,6 +1,5 @@
 """
 Inference Script — SupplyChainEnv
-===================================
 Required env vars:
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
@@ -13,6 +12,13 @@ import json
 import sys
 from typing import List, Optional
 
+# Fix import paths — works both locally and in Docker (/app)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(BASE_DIR, "src"))
+sys.path.insert(0, os.path.join(BASE_DIR, "tasks"))
+sys.path.insert(0, "/app/src")
+sys.path.insert(0, "/app/tasks")
+
 # --- env vars ---
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "dummy-key"
@@ -21,10 +27,6 @@ TASK_NAME = os.getenv("TASK_NAME", "easy")
 MAX_STEPS = 60
 TEMPERATURE = 0.2
 MAX_TOKENS = 512
-
-# add src and tasks to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "tasks"))
 
 from supply_chain_env.env import SupplyChainEnv, SupplyChainAction, OrderItem, TASK_CONFIGS
 
@@ -52,11 +54,10 @@ def log_end(success: bool, steps: int, rewards: List[float]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fallback greedy policy (always works, no network needed)
+# Fallback greedy policy
 # ---------------------------------------------------------------------------
 
 def fallback_action(obs) -> SupplyChainAction:
-    """Simple greedy fallback — no LLM needed."""
     orders = []
     NW = len(obs.inventory) if obs.inventory else 0
     NP = len(obs.inventory[0]) if NW > 0 else 0
@@ -70,28 +71,23 @@ def fallback_action(obs) -> SupplyChainAction:
         if gap > 1.0:
             orders.append(OrderItem(
                 product_id=p,
-                quantity=int(round(gap)),
+                quantity=min(500, max(0, int(round(gap)))),
                 supplier_id=NS - 1,
             ))
     return SupplyChainAction(orders=orders)
 
 
 # ---------------------------------------------------------------------------
-# LLM agent (with full fallback on any error)
+# LLM agent
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a supply chain inventory management agent.
-Respond with a JSON object only:
-{
-  "orders": [
-    {"product_id": 0, "quantity": 50, "supplier_id": 1}
-  ]
-}
-Rules: quantity 0-500, supplier 0=fast+expensive, last=slow+cheap. JSON only."""
+Respond with JSON only:
+{"orders": [{"product_id": 0, "quantity": 50, "supplier_id": 1}]}
+Rules: quantity 0-500, supplier 0=fast+expensive, last=slow+cheap."""
 
 
 def get_llm_action(client, obs, cfg: dict) -> SupplyChainAction:
-    """Ask LLM what to order. Falls back to greedy on any error."""
     try:
         NW = len(obs.inventory)
         NP = len(obs.inventory[0]) if NW > 0 else 0
@@ -101,10 +97,10 @@ def get_llm_action(client, obs, cfg: dict) -> SupplyChainAction:
 In-transit: {obs.in_transit}
 Demand forecast: {obs.demand_forecast}
 Supplier prices: {obs.supplier_prices}
-Supplier lead times: {obs.supplier_lead_times}
+Lead times: {obs.supplier_lead_times}
 Stockouts: {obs.stockouts}
 Task: {TASK_NAME} | Warehouses: {NW} | Products: {NP} | Suppliers: {NS}
-Respond with JSON orders only."""
+JSON only."""
 
         completion = client.chat.completions.create(
             model=MODEL_NAME,
@@ -117,8 +113,6 @@ Respond with JSON orders only."""
             timeout=10,
         )
         response_text = completion.choices[0].message.content or "{}"
-
-        # strip markdown fences
         response_text = response_text.strip()
         if "```" in response_text:
             parts = response_text.split("```")
@@ -136,9 +130,7 @@ Respond with JSON orders only."""
                 supplier_id=int(o["supplier_id"]),
             ))
         return SupplyChainAction(orders=orders)
-
     except Exception:
-        # any error → use greedy fallback silently
         return fallback_action(obs)
 
 
@@ -154,7 +146,6 @@ def main() -> None:
     log_start(task=TASK_NAME, env="supply-chain-env", model=MODEL_NAME)
 
     try:
-        # try to init OpenAI client — fall back gracefully if no key
         try:
             from openai import OpenAI
             client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
@@ -171,7 +162,6 @@ def main() -> None:
             if obs.done:
                 break
 
-            # get action
             try:
                 if use_llm and client:
                     action = get_llm_action(client, obs, cfg)
@@ -185,7 +175,6 @@ def main() -> None:
                 for o in action.orders
             ])
 
-            # step environment
             try:
                 obs = env.step(action)
                 reward = float(obs.reward) if obs.reward is not None else 0.0
@@ -198,7 +187,6 @@ def main() -> None:
 
             rewards.append(reward)
             steps_taken = step
-
             log_step(step=step, action=action_str, reward=reward, done=done, error=error)
 
             if done:
