@@ -14,78 +14,66 @@ tasks:
     difficulty: easy
     description: "Single warehouse, 1 product, stable demand. Learn basic restocking."
     max_steps: 20
-    target_score: 0.7
+    target_score: 0.5
+    grader_entrypoint: "tasks.graders:grade_easy"
 
   - id: medium
     difficulty: medium
     description: "Single warehouse, 5 products, seasonal demand fluctuation."
     max_steps: 40
-    target_score: 0.5
+    target_score: 0.4
+    grader_entrypoint: "tasks.graders:grade_medium"
 
   - id: hard
     difficulty: hard
     description: "3 warehouses, 10 products, noisy seasonal demand + random supplier delays."
     max_steps: 60
-    target_score: 0.35
+    target_score: 0.3
+    grader_entrypoint: "tasks.graders:grade_hard"
 
 action_space:
   type: structured
   description: >
-    A list of OrderItem objects, each containing:
-      - product_id (int): which product to restock
-      - quantity (int, 0–500): how many units to order
-      - supplier_id (int): which supplier to order from
+    A list of OrderItem objects, each containing product_id, quantity, and supplier_id.
 
 observation_space:
   type: structured
   fields:
     - name: inventory
       type: "List[List[float]]"
-      description: "Current stock [num_warehouses x num_products]"
     - name: in_transit
       type: "List[List[float]]"
-      description: "Units arriving next step [num_warehouses x num_products]"
     - name: demand_forecast
       type: "List[List[float]]"
-      description: "Noisy demand forecast [num_warehouses x num_products]"
     - name: supplier_prices
       type: "List[List[float]]"
-      description: "Unit price [num_products x num_suppliers]"
     - name: supplier_lead_times
       type: "List[List[int]]"
-      description: "Delivery lead time in steps [num_products x num_suppliers]"
     - name: stockouts
       type: "List[List[float]]"
-      description: "Unmet demand this step [num_warehouses x num_products]"
     - name: step_cost
       type: float
-      description: "Total cost (ordering + holding + stockout penalty)"
     - name: reward
       type: float
-      description: "Partial progress signal in [-1.0, 1.0]"
     - name: done
       type: bool
-      description: "Whether the episode has ended"
 
 reward:
   range: [-1.0, 1.0]
-  description: >
-    reward = clamp((fulfilled_demand_value * 2 - order_cost - holding_cost - stockout_penalty) / scale, -1, 1)
-    Positive when demand is met efficiently; negative when stockouts or overspending occur.
+  description: "service_level * 0.9 - stockout_severity * 0.5 - holding_penalty - 0.05"
 
 environment:
-  server_module: supply_chain_env.server
-  server_app: app
-  port: 8000
-  env_vars:
-    TASK_ID: easy  # override to 'medium' or 'hard'
+  env_class: "supply_chain_env.env:SupplyChainEnv"
+  server_module: "supply_chain_env.server"
+  server_app: "app"
+  port: 7860
 
 docker:
   base_image: python:3.11-slim
-  port: 8000
+  port: 7860
 
 baseline:
-  script: scripts/baseline_inference.py
+  script: "inference.py"
   agent: "Greedy Restock (safety_factor=1.5)"
   scores:
     easy: 0.568
